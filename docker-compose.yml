@@ -3,124 +3,84 @@ version: '3.3'
 
 
 networks:
-  back-tier:
-
-configs:
-  prometheus.yml:
-    file: ./prometheus/prometheus.yml
-  alert.rules:
-    file: ./prometheus/alert.rules
-  config.yml:
-    file: ./alertmanager/config.yml
-  dashboard.yml:
-    file: ./grafana/provisioning/dashboards/dashboard.yml
-  docker-dashboard_rev5.json:
-    file: ./grafana/provisioning/dashboards/docker-dashboard_rev5.json
-  datasource.yml:
-    file: ./grafana/provisioning/datasources/datasource.yml
+  prom-mon:
 
 services:
+
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - ./prometheus/alert.rules:/etc/prometheus/alert.rules
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api' #allow admin api and reload
+      - '--log.level=debug' #for troubleshooting
+    ports:
+      - 9090:9090
+    networks:
+      - prom-mon
+    restart: always
+
+  pushgateway:
+    image: prom/pushgateway
+    ports:
+      - 9091:9091
+    networks:
+      - prom-mon
+    restart: always
 
   grafana:
     image: grafana/grafana
     depends_on:
       - prometheus
+      - mariadb
     ports:
       - 3000:3000
-    configs:
-      - source: dashboard.yml
-        target: /etc/grafana/provisioning/dashboards/dashboard.yml
-        uid: '472'
-      - source: docker-dashboard_rev5.json
-        target: /etc/grafana/provisioning/dashboards/docker-dashboard_rev5.json
-        uid: '472'
-      - source: datasource.yml
-        target: /etc/grafana/provisioning/datasources/datasource.yml
-        uid: '472'
- 
-
+    volumes:
+      - ./grafana/provisioning/dashboards/:/etc/grafana/provisioning/dashboards/
+      - ./grafana/provisioning/datasources/datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml
     env_file:
       - ./grafana/config.monitoring
     networks:
-      - back-tier
+      - prom-mon
     restart: always
-    deploy:
-       replicas: 2
-       
-  mariadb:
-     image: mariadb
-     environment:
-         - MYSQL_ROOT_PASSWORD=mariadb
-         - MYSQL_DATABASE=grafana
-     networks:
-      - back-tier
-
-  prometheus:
-    image: prom/prometheus
-    configs:
-      - source: prometheus.yml
-        target: /etc/prometheus/prometheus.yml
-      - source: alert.rules
-        target: /etc/prometheus/alert.rules
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-
-    ports:
-      - 9090:9090
-    networks:
-      - back-tier
-    restart: always
-    deploy:
-       replicas: 2
-
-  node-exporter:
-    image: prom/node-exporter
-    volumes:
-      - /proc:/host/proc:ro
-      - /sys:/host/sys:ro
-      - /:/rootfs:ro
-    command: 
-      - '--path.procfs=/host/proc' 
-      - '--path.sysfs=/host/sys'
-      - --collector.filesystem.ignored-mount-points
-      - "^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)"
-    ports:
-      - 9100:9100
-    networks:
-      - back-tier
-    restart: always
-    deploy:
-      mode: global
 
   alertmanager:
-    image: prom/alertmanager:v0.15.0-rc.2
+    image: prom/alertmanager:v0.15.0-rc.3
+    depends_on:
+      - mailhog
     ports:
       - 9093:9093
-    configs:
-      - source: config.yml
-        target: /etc/alertmanager/config.yml
+    volumes:
+      - ./alertmanager/config.yml:/etc/alertmanager/config.yml
     networks:
-      - back-tier
+      - prom-mon
     restart: always
     command:
       - '--config.file=/etc/alertmanager/config.yml'
       - '--storage.path=/alertmanager'
-      - '--cluster.peer=alertmanager2:9094'
-  alertmanager2:
-    image: prom/alertmanager:v0.15.0-rc.2
-    ports:
-      - 9094:9093
-    configs:
-      - source: config.yml
-        target: /etc/alertmanager/config.yml
-    networks:
-      - back-tier
-    restart: always
-    command:
-      - '--config.file=/etc/alertmanager/config.yml'
-      - '--storage.path=/alertmanager'
-      - '--cluster.peer=alertmanager:9094'
+#      - '--cluster.peer=alertmanager2:9094'
+
+#  alertmanager2:
+#    image: prom/alertmanager:v0.15.0-rc.3
+#    ports:
+#      - 9094:9093
+#    configs:
+#      - source: config.yml
+#        target: /etc/alertmanager/config.yml
+#    networks:
+#      - prom-mon
+#    restart: always
+#    command:
+#      - '--config.file=/etc/alertmanager/config.yml'
+#      - '--storage.path=/alertmanager'
+#      - '--cluster.peer=alertmanager:9094'
+
   cadvisor:
     image: google/cadvisor
     volumes:
@@ -129,9 +89,26 @@ services:
       - /sys:/sys:ro
       - /var/lib/docker/:/var/lib/docker:ro
     ports:
-      - 8080:8080
+      - 9095:9095
     networks:
-      - back-tier
+      - prom-mon
     restart: always
-    deploy:
-      mode: global
+    command:
+      - '--port=9095'
+
+  mariadb:
+     image: mariadb
+     environment:
+         - MYSQL_ROOT_PASSWORD=mariadb
+         - MYSQL_DATABASE=grafana
+     networks:
+      - prom-mon
+
+  mailhog:
+    image: mailhog/mailhog
+    ports:
+      - 1025:1025
+      - 8025:8025
+    networks:
+      - prom-mon
+    restart: always
